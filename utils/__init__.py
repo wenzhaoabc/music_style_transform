@@ -43,13 +43,19 @@ def verify_phone(phone: str | int) -> bool:
         return False
 
 
-def decode_base64(base64_data: str | bytearray | bytes) -> bytes:
+def decode_base64(base64_data: str) -> str and bytes | None:
     """
     将base64字符串解码成二进制字节数组
     :param base64_data: base64字符串
     :return: 二进制字节数组
     """
-    return base64.b64decode(base64_data)
+    start_char = base64_data.find(':')
+    end_char = base64_data.find(';')
+    data_start_index = base64_data.find(',') + 1
+    if start_char < 1 or end_char < 1:
+        return None
+    image_name = (base64_data[start_char + 1:end_char]).replace('/', '.')
+    return image_name, base64.b64decode(base64_data[data_start_index:])
 
 
 def upload_image(image: str | bytes | bytearray, image_name: str = "image.jpg") -> str:
@@ -60,12 +66,28 @@ def upload_image(image: str | bytes | bytearray, image_name: str = "image.jpg") 
     :return: 图片的URL
     """
     if type(image) is str:
-        image = decode_base64(image)
+        image_name, image = decode_base64(image)
     auth = oss2.Auth(OSS.AccessKeyId, OSS.AccessKeySecret)
     bucket = oss2.Bucket(auth=auth, endpoint=OSS.Endpoint, bucket_name=OSS.Bucket)
-    key = 'images/' + str(str(uuid.uuid4()).replace('-', '') + image_name)
+    key = 'images/' + str(str(uuid.uuid4().hex).replace('-', '') + '/' + image_name)
     bucket.put_object(key=key, data=image)
-    return OSS.Endpoint + key
+    image_url = 'https://' + OSS.Bucket + '.' + OSS.Endpoint + '/' + key
+    return image_url.replace(' ', '')
+
+
+def upload_file(file, file_name: str) -> str:
+    """
+    上传文件到OSS
+    :param file: 文件
+    :param file_name: 文件名
+    :return: 访问文件的URL
+    """
+    auth = oss2.Auth(OSS.AccessKeyId, OSS.AccessKeySecret)
+    bucket = oss2.Bucket(auth=auth, endpoint=OSS.Endpoint, bucket_name=OSS.Bucket)
+    key = 'files/' + uuid.uuid4().hex.replace('-', '') + '/' + file_name
+    bucket.put_object(key=key, data=file)
+    file_url = 'https://' + OSS.Bucket + '.' + OSS.Endpoint + '/' + key
+    return file_url
 
 
 class DatetimeEncoder(json.JSONEncoder):

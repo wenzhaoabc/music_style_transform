@@ -32,7 +32,7 @@ class DBConfig:
 
 # OSS云存储配置
 class OSS:
-    AccessKeyId = ''
-    AccessKeySecret = ''
-    Endpoint = ''
-    Bucket = ''
+    AccessKeyId = 'LTAI5t7FQpFy6b2dLAJBQuMf'
+    AccessKeySecret = '7bDGrO2ez4Wnnou7EHsQumnfTo1Hzh'
+    Endpoint = 'oss-cn-shanghai.aliyuncs.com'
+    Bucket = 'musicstyle'
