@@ -312,6 +312,7 @@ def upload_single_instrument():
     description = ''
     category = ''
     image_url = ''
+    model_url = ''
 
     try:
         name = request.form['name']
@@ -319,6 +320,8 @@ def upload_single_instrument():
         category = request.form['category']
         image = request.files['image']
         image_url = upload_file(image, image.filename)
+        model = request.files.get('model')
+        model_url = upload_file(model, model.filename)
     except KeyError:
         msg = '参数错误或缺失'
         code = ResponseCode.param_error
@@ -332,12 +335,14 @@ def upload_single_instrument():
         cursor = db_conn.cursor(pymysql.cursors.DictCursor)
         try:
             cursor.execute(
-                "INSERT INTO db_music_trans.t_instrument(`name`,`image`,`description`,`category`) VALUES (%s,%s,%s,%s)",
-                (name, image_url, description, category))
+                "INSERT INTO db_music_trans.t_instrument(`name`,`image`,`model`,`description`,`category`) "
+                "VALUES (%s,%s,%s,%s,%s)",
+                (name, image_url, model_url, description, category))
             db_conn.commit()
             cursor.execute("SELECT LAST_INSERT_ID() AS id")
             insert_id = cursor.fetchone().get('id')
-            data = dict(id=insert_id, name=name, image=image_url, description=description, category=category)
+            data = dict(id=insert_id, name=name, image=image_url, model=model_url, description=description,
+                        category=category)
         except db_conn.Error:
             db_conn.rollback()
             code = ResponseCode.db_conn_error
@@ -485,6 +490,185 @@ def delete_single_instrument():
             cursor.close()
 
     result = dict(code=code, msg=msg)
+    return json.dumps(result)
+
+
+@app.route('/music', methods=['POST'])
+def post_single_music():
+    """
+    上传乐曲,所有数据存于form表单中
+    name : Text 乐曲名
+    artist : Text 作者
+    genre : Text 体裁风格
+    description : Text 乐曲简介
+    file : File 乐曲文件
+    instrument : List [{"name":"name:String","weight":weight:float}], 该乐曲演凑的乐曲及其权重
+    :return: data域为该乐曲的上传信息
+    """
+    code = ResponseCode.success
+    msg = ''
+    mi = dict()
+    try:
+        mi['name'] = request.form['name']
+        mi['artist'] = request.form['artist']
+        mi['genre'] = request.form['genre']
+        mi['description'] = request.form['description']
+        mi['instrument'] = request.form['instrument']
+        mi['instrument'] = json.loads(mi['instrument'])
+        file = request.files.get('file')
+        if file is None:
+            raise FileNotFoundError
+        else:
+            mi['file'] = upload_file(file, file.filename)
+    except FileNotFoundError:
+        code = ResponseCode.param_missing
+        msg = '缺失乐曲文件'
+    except Exception as e:
+        print(e)
+        code = ResponseCode.param_missing
+        msg = '参数缺失'
+
+    if code == ResponseCode.success:
+        db_conn = get_db()
+        cursor = db_conn.cursor(pymysql.cursors.DictCursor)
+        try:
+            cursor.execute("INSERT INTO db_music_trans.t_music(`name`, artist, genre, `description`, file_url) VALUES "
+                           "(%s,%s,%s,%s,%s)",
+                           (mi['name'], mi['artist'], mi['genre'], mi['description'], mi['file']))
+            db_conn.commit()
+            cursor.execute("SELECT LAST_INSERT_ID() AS id FROM db_music_trans.t_music")
+            mi['id'] = cursor.fetchone()['id']
+            # 已收录的乐器
+            instruments = list()
+            for item in list(mi['instrument']):
+                cursor.execute("SELECT `id`,`name` FROM db_music_trans.t_instrument WHERE `name` = %s", (item['name']))
+                temp = cursor.fetchone()
+                if temp is None:
+                    msg = "未收录乐器{}".format(item['name'])
+                    raise pymysql.err.Warning
+                inst_id = temp['id']
+                cursor.execute("INSERT INTO db_music_trans.t_music_instrument(music_id, instrument_id, weight) VALUES "
+                               "(%s,%s,%s)",
+                               (mi['id'], inst_id, item['weight']))
+
+                instruments.append(dict(id=temp['id'], name=temp['name'], weight=item['weight']))
+            mi['instrument'] = instruments
+            db_conn.commit()
+        except pymysql.Error:
+            db_conn.rollback()
+            code = ResponseCode.db_conn_error
+            msg = "数据库链接错误"
+        except pymysql.Warning:
+            db_conn.rollback()
+            code = ResponseCode.db_not_found
+        finally:
+            cursor.close()
+
+    result = dict(code=code, data=mi, msg=msg)
+    return json.dumps(result)
+
+
+@app.route('/music_inst_type', methods=['GET'])
+def get_music_list_by_inst_type():
+    """
+    获取某一类型乐器演凑的所有曲子
+    URL 参数 ?type=<inst_type>
+    :return: data域为乐曲列表
+    """
+    code = ResponseCode.success
+    msg = ""
+    data = []
+
+    inst_type = request.args.get('type')
+    if inst_type is None:
+        code = ResponseCode.param_missing
+        msg = "缺失URL参数type"
+
+    if code == ResponseCode.success:
+        db_conn = get_db()
+        cursor = db_conn.cursor(pymysql.cursors.DictCursor)
+
+        try:
+            cursor.execute("SELECT t_music.* FROM t_music WHERE id IN "
+                           "(SELECT t_mi.music_id AS id FROM t_music_instrument t_mi,t_instrument "
+                           "WHERE t_mi.instrument_id=t_instrument.id AND t_instrument.category=%s)",
+                           (inst_type))
+            data = cursor.fetchall()
+            msg = 'success'
+        except pymysql.Error:
+            code = ResponseCode.db_conn_error
+            msg = "数据库连接错误"
+        finally:
+            cursor.close()
+
+    result = dict(code=code, data=data, msg=msg)
+    return json.dumps(result)
+
+
+@app.route('/music_id', methods=['GET'])
+def get_music_info_by_id():
+    """
+    URL参数?id=<music_id>
+    获取指定id的乐曲的详细信息，包括演凑乐器id等
+    :return: data域为乐曲信息
+    """
+    code = ResponseCode.success
+    msg = ''
+    data = dict()
+
+    music_id = request.args.get('id')
+    if id is None:
+        code = ResponseCode.param_missing
+        msg = "缺少乐曲ID"
+
+    if code == ResponseCode.success:
+        db_conn = get_db()
+        cursor = db_conn.cursor(pymysql.cursors.DictCursor)
+
+        try:
+            cursor.execute("SELECT t_music.* FROM t_music WHERE id=%s", (music_id))
+            data = cursor.fetchone()
+            if data is not None:
+                cursor.execute("SELECT * FROM t_music_instrument WHERE music_id=%s", (music_id))
+                data['instruments'] = cursor.fetchall()
+                msg = 'success'
+            else:
+                code = ResponseCode.db_not_found
+                msg = "数据不存在"
+        except pymysql.Error:
+            code = ResponseCode.db_conn_error
+            msg = "数据库连接错误"
+        finally:
+            cursor.close()
+
+    result = dict(code=code, data=data, msg=msg)
+    return json.dumps(result)
+
+
+@app.route('/music_all', methods=['GET'])
+def get_all_music():
+    """
+    获取所有乐曲
+    :return: data域为乐曲列表
+    """
+    code = ResponseCode.success
+    msg = ""
+    data = []
+
+    db_conn = get_db()
+    cursor = db_conn.cursor(pymysql.cursors.DictCursor)
+
+    try:
+        cursor.execute("SELECT * FROM t_music")
+        data = cursor.fetchall()
+        msg = 'success'
+    except pymysql.Error:
+        code = ResponseCode.db_conn_error
+        msg = "数据库连接错误"
+    finally:
+        cursor.close()
+
+    result = dict(code=code, data=data, msg=msg)
     return json.dumps(result)
 
 
