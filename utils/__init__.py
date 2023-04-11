@@ -2,8 +2,11 @@
 import base64
 import json
 import re
+import smtplib
 import uuid
 from datetime import datetime, date
+from email.header import Header
+from email.mime.text import MIMEText
 
 import oss2
 
@@ -90,6 +93,42 @@ def upload_file(file, file_name: str) -> str:
     return file_url
 
 
+def send_mail(to, subject, content):
+    from_addr = "shuaitaozhao2023@163.com"
+    password = "LMNOHULMMTRWAEZY"
+    smtp_server = "smtp.163.com"
+    smtp_port = 465
+    msg = MIMEText(content, 'plain', 'utf-8')
+    msg['From'] = Header(from_addr, 'utf-8')
+    msg['To'] = Header(to, 'utf-8')
+    msg['Subject'] = Header(subject, 'utf-8')
+
+    try:
+        smtp_obj = smtplib.SMTP_SSL(host=smtp_server, port=smtp_port)
+        smtp_obj.login(from_addr, password)
+        smtp_obj.sendmail(from_addr, to_addrs=to, msg=msg.as_string())
+        smtp_obj.quit()
+    except smtplib.SMTPException as e:
+        print(e)
+
+
+def send_feedback_mail(user_id, feedback_type, content):
+    current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    content = \
+        f"""
+        音乐风格迁移风格开发人员你好：
+            id为{user_id}的用户已提交类型为{feedback_type}的反馈信息，内容如下：
+            ****
+            {content}
+            ****
+        请及时处理。
+        {current_date}
+        """
+    send_mail("2050747@tongji.edu.cn", "音乐风格迁移", content)
+    send_mail("2052000@tongji.edu.cn", "音乐风格迁移", content)
+    send_mail("2053518@tongji.edu.cn", "音乐风格迁移", content)
+
+
 class DatetimeEncoder(json.JSONEncoder):
     def default(self, obj: any) -> any:
         """
@@ -113,6 +152,7 @@ class ResponseCode:
     db_conn_error 2001 数据库连接错误
     db_not_found 2002 数据库中不存在相应数据
     existed_error 3001 数据已存在于数据库中
+    not_login 4001 用户未登录
     """
     success = 200
     success_not_content = 204
@@ -121,3 +161,4 @@ class ResponseCode:
     db_conn_error = 2001
     db_not_found = 2002
     existed_error = 3001
+    not_login = 4001

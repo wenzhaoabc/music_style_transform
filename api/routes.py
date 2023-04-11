@@ -10,11 +10,12 @@ from flask import request, session
 import sys
 
 sys.path.insert(0, "D:\\WorkSpace\\Python\\style_transform\\music_style_transform\\")
-sys.path.append("/workspace")
+sys.path.append("/workspace/python/music_style_transform/")
 
 from api import create_app
 from dbconn import get_db
-from utils import allow_cors, ResponseCode, verify_phone, upload_image, DatetimeEncoder, response_json, upload_file
+from utils import allow_cors, ResponseCode, verify_phone, upload_image, DatetimeEncoder, response_json, upload_file, \
+    send_feedback_mail
 
 app = create_app()
 app.after_request(allow_cors)
@@ -298,7 +299,7 @@ def flask_upload_files_by_form():
 @app.route('/instrument/upload', methods=['POST'])
 def upload_single_instrument():
     """
-    上传乐器，数据位于form中，需要字段为`name`,`description`,`category`,`image`,
+    上传乐器，数据位于form中，需要字段为`name`,`name_image`,`audio`,`description`,`category`,`image`,
     前三个为文本类型，`image`为file类型
 
     返回数据中data域形式为
@@ -313,6 +314,8 @@ def upload_single_instrument():
     category = ''
     image_url = ''
     model_url = ''
+    name_image = ''
+    audio = ''
 
     try:
         name = request.form['name']
@@ -322,6 +325,12 @@ def upload_single_instrument():
         image_url = upload_file(image, image.filename)
         model = request.files.get('model')
         model_url = upload_file(model, model.filename)
+        name_image = request.files.get('name_image')
+        if name_image is not None:
+            name_image = upload_file(name_image, name_image.filename)
+        audio = request.files.get('audio')
+        if audio is not None:
+            audio = upload_file(audio, audio.filename)
     except KeyError:
         msg = '参数错误或缺失'
         code = ResponseCode.param_error
@@ -335,14 +344,15 @@ def upload_single_instrument():
         cursor = db_conn.cursor(pymysql.cursors.DictCursor)
         try:
             cursor.execute(
-                "INSERT INTO db_music_trans.t_instrument(`name`,`image`,`model`,`description`,`category`) "
-                "VALUES (%s,%s,%s,%s,%s)",
-                (name, image_url, model_url, description, category))
+                "INSERT INTO db_music_trans.t_instrument(`name`,`image`,`model`,`description`,`category`,"
+                "`name_image`,`audio`)"
+                "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (name, image_url, model_url, description, category, name_image, audio))
             db_conn.commit()
             cursor.execute("SELECT LAST_INSERT_ID() AS id")
             insert_id = cursor.fetchone().get('id')
             data = dict(id=insert_id, name=name, image=image_url, model=model_url, description=description,
-                        category=category)
+                        category=category, name_image=name_image, audio=audio)
         except db_conn.Error:
             db_conn.rollback()
             code = ResponseCode.db_conn_error
@@ -515,6 +525,7 @@ def post_single_music():
         mi['description'] = request.form['description']
         mi['instrument'] = request.form['instrument']
         mi['instrument'] = json.loads(mi['instrument'])
+        mi['image'] = request.form['image']
         file = request.files.get('file')
         if file is None:
             raise FileNotFoundError
@@ -532,9 +543,10 @@ def post_single_music():
         db_conn = get_db()
         cursor = db_conn.cursor(pymysql.cursors.DictCursor)
         try:
-            cursor.execute("INSERT INTO db_music_trans.t_music(`name`, artist, genre, `description`, file_url) VALUES "
-                           "(%s,%s,%s,%s,%s)",
-                           (mi['name'], mi['artist'], mi['genre'], mi['description'], mi['file']))
+            cursor.execute(
+                "INSERT INTO db_music_trans.t_music(`name`,`image`, artist, genre, `description`, file_url) VALUES "
+                "(%s,%s,%s,%s,%s,%s)",
+                (mi['name'], mi['image'], mi['artist'], mi['genre'], mi['description'], mi['file']))
             db_conn.commit()
             cursor.execute("SELECT LAST_INSERT_ID() AS id FROM db_music_trans.t_music")
             mi['id'] = cursor.fetchone()['id']
@@ -578,6 +590,7 @@ def get_music_list_by_inst_type():
     code = ResponseCode.success
     msg = ""
     data = []
+    en_type = {''}
 
     inst_type = request.args.get('type')
     if inst_type is None:
@@ -602,7 +615,7 @@ def get_music_list_by_inst_type():
             cursor.close()
 
     result = dict(code=code, data=data, msg=msg)
-    return json.dumps(result)
+    return json.dumps(result, cls=DatetimeEncoder)
 
 
 @app.route('/music_id', methods=['GET'])
@@ -642,7 +655,7 @@ def get_music_info_by_id():
             cursor.close()
 
     result = dict(code=code, data=data, msg=msg)
-    return json.dumps(result)
+    return json.dumps(result, cls=DatetimeEncoder)
 
 
 @app.route('/music_all', methods=['GET'])
@@ -669,7 +682,181 @@ def get_all_music():
         cursor.close()
 
     result = dict(code=code, data=data, msg=msg)
+    return json.dumps(result, cls=DatetimeEncoder)
+
+
+# 用户提交反馈信息
+@app.route('/feedback', methods=['POST'])
+def user_push_feedback():
+    """
+    用户提交反馈信息，需要登陆后操作，body数据如下
+    {
+        "user_id": "反馈用户ID，非必须，用户已登录的情况下无需该字段《number》",
+        "type": "反馈类型《String》",
+        "content": "反馈的内容《String》1000字以内"
+    }
+    :return:
+    """
+    code = ResponseCode.success
+    msg = ''
+    data = dict()
+    body_data = request.get_json()
+    user_id = session.get('user_id')
+    if user_id is None:
+        user_id = body_data.get('user_id')
+    if user_id is None:
+        code = ResponseCode.param_missing
+        msg = '缺失用户ID'
+
+    feedback_type = body_data.get('type')
+    feedback_content = body_data.get('content')
+
+    db_conn = get_db()
+    cursor = db_conn.cursor(pymysql.cursors.DictCursor)
+
+    if code == ResponseCode.success:
+        try:
+            cursor.execute("INSERT INTO t_customer_feedback(user_id, type, content) VALUES (%s,%s,%s)",
+                           (user_id, feedback_type, feedback_content))
+            db_conn.commit()
+            cursor.execute("SELECT LAST_INSERT_ID() AS id FROM t_customer_feedback")
+            data['id'] = cursor.fetchone().get('id')
+            data['type'] = feedback_type
+            data['content'] = feedback_content
+            data['is_replied'] = False
+            send_feedback_mail(user_id, feedback_type, feedback_content)
+        except db_conn.Error:
+            data = dict()
+            db_conn.rollback()
+            code = ResponseCode.db_conn_error
+            msg = '数据库链接错误'
+        finally:
+            cursor.close()
+
+    result = dict(code=code, data=data, msg=msg)
     return json.dumps(result)
+
+
+# 获取当前用户的所有反馈信息
+@app.route('/my_feedback', methods=['GET'])
+def get_my_feedback_list():
+    """
+    获取请求用户的所有反馈信息，无参数,
+    测试时用户未登录的情况添加URL参数
+    user_id=<userId,number>
+    :return:
+    """
+    code = ResponseCode.success
+    msg = ''
+    data = list()
+
+    user_id = session.get('user_id')
+    if user_id is None:
+        user_id = request.args.get('user_id')
+        if user_id is None:
+            code = ResponseCode.not_login
+        msg = '用户未登录'
+
+    if code == ResponseCode.success:
+        db_conn = get_db()
+        cursor = db_conn.cursor(pymysql.cursors.DictCursor)
+        try:
+            cursor.execute("SELECT * FROM t_customer_feedback WHERE user_id=%s", (user_id))
+            data = cursor.fetchall()
+            msg = '查询成功'
+        except db_conn.Error:
+            code = ResponseCode.db_conn_error
+            msg = '数据库连接错误'
+        finally:
+            cursor.close()
+
+    result = dict(code=code, data=data, msg=msg)
+    return json.dumps(result, cls=DatetimeEncoder)
+
+
+@app.route('/all_feedback', methods=['GET'])
+def get_all_feedback_list():
+    """
+    获取所有反馈信息,无参数返回全部
+    添加参数is_replied = 1/0获取已回复/未回复的反馈信息，
+    :return:
+    """
+    code = ResponseCode.success
+    msg = ''
+    data = list()
+
+    is_replied = None
+    try:
+        is_replied = request.args.get('is_replied', type=int)
+    except ValueError:
+        code = ResponseCode.param_error
+        msg = '参数解析错误'
+
+    if code == ResponseCode.success:
+        db_conn = get_db()
+        cursor = db_conn.cursor(pymysql.cursors.DictCursor)
+
+        try:
+            if is_replied is None:
+                cursor.execute("SELECT * FROM t_customer_feedback WHERE TRUE")
+                data = cursor.fetchall()
+            else:
+                is_replied = bool(is_replied)
+                cursor.execute("SELECT * FROM t_customer_feedback WHERE is_replied=%s", is_replied)
+                data = cursor.fetchall()
+            msg = '查询成功'
+        except db_conn.Error:
+            code = ResponseCode.db_conn_error
+            msg = '数据库连接错误'
+        finally:
+            cursor.close()
+
+    result = dict(code=code, data=data, msg=msg)
+    return json.dumps(result, cls=DatetimeEncoder)
+
+
+@app.route('/reply_feedback', methods=['POST'])
+def reply_one_feedback():
+    """
+    回复一个反馈信息 请求数据位于body格式如下
+    {
+        "id": "该反馈的唯一标识符id，必须",
+        "reply": "回复内容，1000字以内"
+    }
+    :return:
+    """
+    code = ResponseCode.success
+    msg = ''
+    data = list()
+    body_data = request.get_json()
+
+    feedback_id = body_data.get('id')
+    reply = body_data.get('reply')
+
+    if feedback_id is None:
+        code = ResponseCode.param_error
+        msg = '缺少反馈ID'
+
+    if code == ResponseCode.success:
+        db_conn = get_db()
+        cursor = db_conn.cursor(pymysql.cursors.DictCursor)
+
+        try:
+            cursor.execute("UPDATE t_customer_feedback SET is_replied=TRUE,reply=%s,reply_time=CURRENT_TIMESTAMP() "
+                           "WHERE id=%s", (reply, feedback_id))
+            db_conn.commit()
+            msg = '回复成功'
+            cursor.execute("SELECT * FROM t_customer_feedback WHERE id=%s", (feedback_id))
+            data = cursor.fetchone()
+        except db_conn.Error:
+            db_conn.rollback()
+            code = ResponseCode.db_conn_error
+            msg = '数据库连接错误'
+        finally:
+            cursor.close()
+
+    result = dict(code=code, data=data, msg=msg)
+    return json.dumps(result, cls=DatetimeEncoder)
 
 
 if __name__ == '__main__':

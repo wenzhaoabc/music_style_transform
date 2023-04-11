@@ -22,7 +22,8 @@ def get_db():
                                port=port,
                                user=user,
                                password=password,
-                               database=database)
+                               database=database,
+                               init_command="SET SESSION time_zone='+08:00'")
         g.conn = conn
     return g.conn
 
