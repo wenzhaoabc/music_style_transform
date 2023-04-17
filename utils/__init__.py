@@ -129,6 +129,16 @@ def send_feedback_mail(user_id, feedback_type, content):
     send_mail("2053518@tongji.edu.cn", "音乐风格迁移", content)
 
 
+def trans_music_util(url: str, instrument: str):
+    """
+    转换乐曲
+    :param instrument:
+    :param url:
+    :return: 转换后的乐曲的URL
+    """
+    return "https://musicstyle.oss-cn-shanghai.aliyuncs.com/files/777bcd949c9b412e8731e2b5836ee314/百鸟朝凤片段.MP3"
+
+
 class DatetimeEncoder(json.JSONEncoder):
     def default(self, obj: any) -> any:
         """

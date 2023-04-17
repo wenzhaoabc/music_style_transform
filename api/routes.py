@@ -15,7 +15,7 @@ sys.path.append("/workspace/python/music_style_transform/")
 from api import create_app
 from dbconn import get_db
 from utils import allow_cors, ResponseCode, verify_phone, upload_image, DatetimeEncoder, response_json, upload_file, \
-    send_feedback_mail
+    send_feedback_mail, trans_music_util
 
 app = create_app()
 app.after_request(allow_cors)
@@ -287,7 +287,8 @@ def flask_upload_files_by_form():
             file_url = upload_file(file, file.filename)
             file_dict = dict(file=file.filename, url=file_url, success=True)
             data.append(file_dict)
-    except IOError:
+            print(item)
+    except Exception:
         data.pop()
         code = ResponseCode.existed_error
         msg = '存在未上传成功的文件'
@@ -859,5 +860,294 @@ def reply_one_feedback():
     return json.dumps(result, cls=DatetimeEncoder)
 
 
+@app.route('/start_trans', methods=['POST'])
+def trans_music():
+    """
+    转换一首乐曲，数据位于body
+    {
+        "music_id": 音乐的ID，
+        "instrument_id": 要转换成的乐器的ID
+    }
+    :return: data域包括
+    {
+        `id`            int unsigned auto_increment comment '转换后的乐曲ID',
+        `origin_id`     int unsigned not null comment '原乐曲的ID',
+        `instrument_id` int unsigned comment '转换所用的乐器的ID',
+        `transed_url`   varchar(255) comment '转换后的乐曲文件存储URL',
+    }
+    """
+    code = ResponseCode.success
+    msg = ''
+    data = dict()
+
+    music_id = request.get_json().get('music_id')
+    instrument_id = request.get_json().get('instrument_id')
+    if music_id is None or instrument_id is None:
+        code = ResponseCode.param_missing
+        msg = '缺少必要参数，音乐ID或乐器ID'
+
+    user_id = session.get('user_id')
+
+    if code == ResponseCode.success:
+        db_conn = get_db()
+        cursor = db_conn.cursor(pymysql.cursors.DictCursor)
+
+        try:
+            cursor.execute("SELECT * FROM db_music_trans.t_music WHERE id=%s", (music_id))
+            music = cursor.fetchone()
+            if music is None:
+                code = ResponseCode.db_not_found
+                msg = '未查询到该乐器'
+                print(msg)
+            else:
+                music_url = music.get('file_url')
+                # TODO("乐曲转换代码")
+                try:
+                    url = trans_music_util(music_url, instrument_id)
+                except Exception:
+                    code = ResponseCode.existed_error
+                    msg = '转换失败'
+                    print(msg)
+                    raise Exception
+
+                cursor.execute("INSERT INTO t_transed_music(origin_id, instrument_id, transed_url) VALUES( %s, %s, %s)",
+                               (music_id, instrument_id, url))
+                db_conn.commit()
+                cursor.execute("SELECT LAST_INSERT_ID() as id from t_transed_music")
+                trans_music_id = cursor.fetchone().get("id")
+                data = dict(id=trans_music_id, origin_id=music_id, instrument_id=instrument_id, transed_url=url)
+
+                # 用户登录的情况下，添加历史记录
+                if user_id is not None:
+                    cursor.execute("INSERT INTO t_user_history(user_id, transed_id) VALUES (%s,%s)",
+                                   (user_id, trans_music_id))
+                    db_conn.commit()
+
+        except (db_conn.Error, Exception):
+            db_conn.rollback()
+            code = ResponseCode.db_conn_error
+            print(msg)
+            msg = '数据库连接错误'
+        finally:
+            cursor.close()
+
+    result = dict(code=code, data=data, msg=msg)
+    return json.dumps(result, cls=DatetimeEncoder)
+
+
+@app.route('/add_love', methods=['POST'])
+def add_my_love():
+    """
+    用户添加收藏，数据位于body
+    {
+        "transed_id" : 转换后的乐曲的ID,
+        "user_id": 非必须，登陆的情况下不需要该参数
+    }
+    :return: None
+    """
+    code = ResponseCode.success
+    msg = ''
+    data = dict()
+
+    transed_id = request.get_json().get('transed_id')
+    user_id = session.get("user_id")
+    if user_id is None:
+        user_id = request.get_json().get('user_id')
+        if user_id is None:
+            code = ResponseCode.not_login
+            msg = '缺失用户id'
+
+    if transed_id is None:
+        code = ResponseCode.param_missing
+        msg = '参数缺失'
+
+    if code == ResponseCode.success:
+        db_conn = get_db()
+        cursor = db_conn.cursor(pymysql.cursors.DictCursor)
+
+        try:
+            cursor.execute("INSERT INTO t_user_love(user_id, transed_id) VALUES (%s,%s)",
+                           (user_id, transed_id))
+            db_conn.commit()
+            msg = '收藏成功'
+            data = dict(success=True)
+        except db_conn.Error:
+            code = ResponseCode.db_conn_error
+            msg = '数据库连接错误'
+        finally:
+            cursor.close()
+
+    result = dict(code=code, data=data, msg=msg)
+    return json.dumps(result)
+
+
+@app.route('/my_loves', methods=['GET'])
+def get_user_loves_list():
+    """
+    获取用户的所有收藏，用户未登录，测试时加URL参数
+        user_id=<user_id>
+    :return: data域为收藏列表
+    [{
+        `id`            int  '转换后的乐曲ID',
+        `origin_id`     int   '原乐曲的ID',
+        `instrument_id` int   '转换所用的乐器的ID',
+        `transed_url`   string  '转换后的乐曲文件存储URL',
+        `created`       %Y-%m-%d %H:%M:%S  '转换时间',
+        `origin` :  原始乐曲的信息
+        {
+            `id`          int  '歌曲ID',
+            `name`        string '乐曲名',
+            `artist`      string  '乐曲作者',
+            `genre`       string  '体裁，风格',
+            `description` string  '对该乐曲的简洁信息',
+            `file_url`    string  '乐曲文件存储URL',
+            `created_at`  string '创建时间',
+        },
+        `instrument`: 转换所用的乐器
+        {
+            `id`          int  '乐器ID',
+            `name`         '乐器名',
+            `image`       '图片URL',
+            `model`       '乐器3维模型的访问URL',
+            `description` '描述',
+            `category`    '类别',
+        }
+    }]
+    """
+    code = ResponseCode.success
+    msg = ''
+    data = list()
+    user_id = session.get('user_id')
+    if user_id is None:
+        user_id = request.args.get('user_id')
+        if user_id is None:
+            code = ResponseCode.not_login
+            msg = '缺失用户ID'
+
+    if code == ResponseCode.success:
+        db_conn = get_db()
+        cursor = db_conn.cursor(pymysql.cursors.DictCursor)
+
+        try:
+            cursor.execute("SELECT tm.* FROM db_music_trans.t_transed_music tm, t_user_love ul "
+                           "WHERE tm.id = ul.transed_id AND ul.user_id = %s;",
+                           (user_id))
+            data = cursor.fetchall()
+            for item in data:
+                cursor.execute("SELECT * FROM t_music WHERE id = %s",
+                               (item.get('origin_id')))
+                origin = cursor.fetchone()
+                cursor.execute("SELECT * FROM t_instrument WHERE id = %s",
+                               (item.get('instrument_id')))
+                instrument = cursor.fetchone()
+                item['origin'] = origin
+                item['instrument'] = instrument
+                msg = '查询成功'
+
+        except db_conn.Error:
+            code = ResponseCode.db_conn_error
+            msg = '数据库连接错误'
+        finally:
+            cursor.close()
+
+    result = dict(code=code, data=data, msg=msg)
+    return json.dumps(result, cls=DatetimeEncoder)
+
+
+@app.route('/delete_love', methods=['DELETE'])
+def delete_my_love_item():
+    """
+    删除收藏
+    数据位于URL参数中
+    ?user_id = <> 用户ID，已登陆的情况下不需要
+    &transed_id = <> 转换后的乐曲的ID
+    :return:
+    """
+    code = ResponseCode.success
+    msg = ''
+    data = True
+
+    user_id = session.get('user_id')
+    if user_id is None:
+        user_id = request.args.get('user_id')
+        if user_id is None:
+            code = ResponseCode.not_login
+            msg = '缺失用户ID'
+
+    transed_id = request.args.get('transed_id')
+    if transed_id is None:
+        code = ResponseCode.param_missing
+        msg = '缺失转换后的乐曲的ID'
+
+    if code == ResponseCode.success:
+        db_conn = get_db()
+        cursor = db_conn.cursor(pymysql.cursors.DictCursor)
+
+        try:
+            cursor.execute("DELETE FROM t_user_love WHERE user_id = %s AND transed_id = %s",
+                           (user_id, transed_id))
+            db_conn.commit()
+            data = True
+        except db_conn.Error:
+            db_conn.rollback()
+            data = False
+            code = ResponseCode.db_conn_error
+            msg = '数据库连接错误'
+        finally:
+            cursor.close()
+
+    result = dict(code=code, data=data, msg=msg)
+    return json.dumps(result)
+
+
+@app.route('/my_history', methods=['GET'])
+def get_my_trans_history_list():
+    """
+    获取用户转换的历史记录
+    用户未登录的情况下需要URL参数
+    user_id=《》
+    :return:
+    """
+    code = ResponseCode.success
+    msg = ''
+    data = list()
+
+    user_id = session.get('user_id')
+    if user_id is None:
+        user_id = request.args.get('user_id')
+        if user_id is None:
+            code = ResponseCode.not_login
+            msg = '缺失用户ID'
+
+    if code == ResponseCode.success:
+        db_conn = get_db()
+        cursor = db_conn.cursor(pymysql.cursors.DictCursor)
+
+        try:
+            cursor.execute("SELECT * FROM db_music_trans.t_transed_music tm, t_user_history uh "
+                           "WHERE tm.id = uh.transed_id AND uh.user_id = %s;",
+                           (user_id))
+            data = cursor.fetchall()
+            if data is not None:
+                for item in data:
+                    cursor.execute("SELECT * FROM t_music WHERE id = %s",
+                                   (item.get('origin_id')))
+                    origin = cursor.fetchone()
+                    cursor.execute("SELECT * FROM t_instrument WHERE id = %s",
+                                   (item.get('instrument_id')))
+                    instrument = cursor.fetchone()
+                    item['origin'] = origin
+                    item['instrument'] = instrument
+                    msg = '查询成功'
+        except db_conn.Error:
+            code = ResponseCode.db_conn_error
+            msg = '数据库连接错误'
+        finally:
+            cursor.close()
+
+    result = dict(code=code, data=data, msg=msg)
+    return json.dumps(result, cls=DatetimeEncoder)
+
+
 if __name__ == '__main__':
-    app.run()
+    app.run(port=5000, debug=False, host='0.0.0.0')
