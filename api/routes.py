@@ -3,11 +3,14 @@
 网络请求API
 """
 import json
+import random
+# 设置当前路径
+import sys
+import time
+from datetime import datetime
 
 import pymysql.cursors
 from flask import request, session
-# 设置当前路径
-import sys
 
 sys.path.insert(0, "D:\\WorkSpace\\Python\\style_transform\\music_style_transform\\")
 sys.path.append("/workspace/python/music_style_transform/")
@@ -15,7 +18,7 @@ sys.path.append("/workspace/python/music_style_transform/")
 from api import create_app
 from dbconn import get_db
 from utils import allow_cors, ResponseCode, verify_phone, upload_image, DatetimeEncoder, response_json, upload_file, \
-    send_feedback_mail, trans_music_util
+    send_feedback_mail, trans_music_util, send_mail
 
 app = create_app()
 app.after_request(allow_cors)
@@ -29,6 +32,7 @@ def register():
     ```json
     {
         "phone": "string, 用户手机号",
+        "mail": "string 用户邮箱",
         "password": "string,哈希加密后的密码",
         "username": "string,用户昵称",
         "avatar": "base64格式，用户头像图片"
@@ -40,6 +44,7 @@ def register():
     body_data = request.get_json()
     username = body_data.get('username', 'User')
     phone = body_data.get('phone')
+    mail = body_data.get('mail')
     password = body_data.get('password')
     avatar = body_data.get('avatar')
     # 获取数据库连接
@@ -78,8 +83,8 @@ def register():
             else:
                 try:
                     cursor.execute(
-                        "INSERT INTO db_music_trans.t_user(phone,username,password,avatar) VALUES (%s,%s,%s,%s)",
-                        (phone, username, password, avatar))
+                        "INSERT INTO db_music_trans.t_user(phone,mail,username,password,avatar) VALUES (%s,%s,%s,%s,%s)",
+                        (phone, mail, username, password, avatar))
                     db_conn.commit()
                     code = ResponseCode.success
                     msg = '已成功注册'
@@ -198,6 +203,116 @@ def remove_account():
         msg = '账户不存在'
     result = dict(code=code, msg=msg)
 
+    return json.dumps(result)
+
+
+user_mail_code = dict()
+
+
+@app.route('/send_verify_code', methods=['POST'])
+def get_mail_verify_code():
+    """
+    用户修改密码获取邮箱验证码数据位于body
+    {
+        "mail":邮箱
+    }
+    :return:
+    """
+    code = ResponseCode.success
+    msg = ''
+    data = False
+
+    body_data = request.get_json()
+    mail_addr = body_data.get('mail', str)
+    if mail_addr is None or str(mail_addr).find('@') < 0:
+        code = ResponseCode.param_missing
+        msg = '邮箱格式错误'
+
+    if code == ResponseCode.success:
+        ran = random.Random()
+        verify_code = ran.randint(100000, 999999)
+        current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        content = \
+            f"""
+尊敬的用户你好：
+    你的验证码为{verify_code},请勿将验证码泄露于他人，此验证码15分钟内有效。
+音乐风格迁移
+{current_date}
+        """
+        try:
+            send_mail(mail_addr, '音乐风格迁移验证码', content)
+            user_mail_code[mail_addr] = dict(code=verify_code, time=time.time())
+            data = True
+            msg = '验证码发送成功'
+        except Exception:
+            code = ResponseCode.existed_error
+            msg = '验证码发送失败'
+        finally:
+            pass
+    result = dict(code=code, data=data, msg=msg)
+    return json.dumps(result)
+
+
+@app.route('/modify_passwd', methods=['POST'])
+def user_change_password():
+    """
+    用户修改密码 body
+    {
+        "mail": "string 用户邮箱",
+        "verify_code": "string 邮箱验证码"
+        "password": "新密码"
+    }
+    :return:
+    """
+    code = ResponseCode.success
+    msg = ''
+    data = dict()
+    body_data = request.get_json()
+    mail_addr = body_data.get('mail')
+    verify_code = body_data.get('verify_code')
+    password = body_data.get('password')
+
+    if mail_addr is None or verify_code is None or password is None:
+        code = ResponseCode.param_missing
+        msg = '参数缺失'
+
+    user_verify_code_data = user_mail_code.get(mail_addr)
+    # print(user_mail_code, mail_addr, verify_code, password)
+    if user_verify_code_data is None:
+        code = ResponseCode.db_not_found
+        msg = '邮箱不正确'
+    elif str(user_verify_code_data.get('code')) != str(verify_code):
+        code = ResponseCode.param_error
+        msg = '验证码不正确'
+    elif int(time.time() - user_verify_code_data.get('time')) > 60 * 15:
+        code = ResponseCode.param_error
+        msg = '验证码已过期'
+
+    if code == ResponseCode.success:
+        db_conn = get_db()
+        cursor = db_conn.cursor(pymysql.cursors.DictCursor)
+
+        try:
+            cursor.execute("SELECT * FROM t_user WHERE mail = %s LIMIT 1", (mail_addr))
+            current_user = cursor.fetchone()
+            if current_user is None:
+                code = ResponseCode.db_not_found
+                msg = '邮箱不正确'
+            else:
+                cursor.execute("UPDATE t_user SET password=%s WHERE mail = %s", (password, mail_addr))
+                db_conn.commit()
+                session.clear()
+                session['user_id'] = current_user.get('id')
+                session['user_phone'] = current_user.get('phone')
+                msg = '修改成功'
+                data = True
+        except db_conn.Error:
+            code = ResponseCode.db_conn_error
+            msg = '数据库连接错误'
+        finally:
+            cursor.close()
+
+    result = dict(code=code, data=data, msg=msg)
     return json.dumps(result)
 
 
