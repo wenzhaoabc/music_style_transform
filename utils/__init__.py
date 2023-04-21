@@ -46,6 +46,19 @@ def verify_phone(phone: str | int) -> bool:
         return False
 
 
+def verify_mail(mail: str) -> bool:
+    """
+    正则验证邮箱是否合法
+    :param mail:
+    :return:
+    """
+    regex = re.compile(r'([A-Za-z0-9]+[.-_])*[A-Za-z0-9]+@[A-Za-z0-9-]+(\.[A-Z|a-z]{2,})+')
+    if re.fullmatch(regex, mail):
+        return True
+    else:
+        return False
+
+
 def decode_base64(base64_data: str) -> str and bytes | None:
     """
     将base64字符串解码成二进制字节数组

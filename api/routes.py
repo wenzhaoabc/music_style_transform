@@ -18,7 +18,7 @@ sys.path.append("/workspace/python/music_style_transform/")
 from api import create_app
 from dbconn import get_db
 from utils import allow_cors, ResponseCode, verify_phone, upload_image, DatetimeEncoder, response_json, upload_file, \
-    send_feedback_mail, trans_music_util, send_mail
+    send_feedback_mail, trans_music_util, send_mail, verify_mail
 
 app = create_app()
 app.after_request(allow_cors)
@@ -106,6 +106,89 @@ def register():
     return json.dumps(result, cls=DatetimeEncoder)
 
 
+@app.route('/register_mail', methods=['POST'])
+def register_with_mail():
+    """
+    用户注册，post请求，请求体位于body
+    ```json
+    {
+        "phone": "string, 用户手机号", // 非必须
+        "mail": "string 用户邮箱",
+        "password": "string,哈希加密后的密码",
+        "username": "string,用户昵称",
+        "avatar": "base64格式，用户头像图片"
+    }
+    ```
+    :return: data字段 注册成功返回userInfo 其余为空
+    """
+    # 获取request的body里面的数据
+    body_data = request.get_json()
+    username = body_data.get('username', 'User')
+    phone = body_data.get('phone')
+    mail = body_data.get('mail')
+    password = body_data.get('password')
+    avatar = body_data.get('avatar')
+    # 获取数据库连接
+    db_conn = get_db()
+    # response
+    code = ResponseCode.success
+    msg = ''
+    userInfo = None
+
+    if not mail:
+        code = ResponseCode.param_missing
+        msg = '缺少邮箱'
+    elif not verify_mail(mail):
+        code = ResponseCode.param_error
+        msg = '邮箱格式错误'
+    elif not password:
+        code = ResponseCode.param_missing
+        msg = '缺少密码'
+    else:
+        pass
+
+    if avatar and avatar != '':
+        try:
+            avatar = upload_image(avatar)
+        except RuntimeError:
+            avatar = None
+
+    if code is ResponseCode.success:
+        cursor = db_conn.cursor(pymysql.cursors.DictCursor)
+        try:
+            cursor.execute("SELECT id FROM t_user WHERE mail = %s", (mail))
+            result = cursor.fetchone()
+            if result:
+                code = ResponseCode.existed_error
+                msg = '该邮箱已注册'
+            else:
+                try:
+                    cursor.execute(
+                        "INSERT INTO db_music_trans.t_user(phone,mail,username,password,avatar) VALUES (%s,%s,%s,%s,%s)",
+                        (phone, mail, username, password, avatar))
+                    db_conn.commit()
+                    code = ResponseCode.success
+                    msg = '已成功注册'
+                    cursor.execute(
+                        "SELECT id, phone,mail,username,avatar,created FROM db_music_trans.t_user WHERE mail = %s", (mail))
+                    userInfo = cursor.fetchone()
+                    session.clear()
+                    session['user_id'] = userInfo['id']
+                    session['user_phone'] = userInfo.get('phone')
+                    session['user_mail'] = userInfo.get('mail')
+                except db_conn.IntegrityError:
+                    code = ResponseCode.existed_error
+                    msg = '该邮箱已注册'
+        except db_conn.Error:
+            code = ResponseCode.db_conn_error
+            msg = '数据库链接错误'
+        finally:
+            # 释放游标
+            cursor.close()
+    result = dict(code=code, data=userInfo, msg=msg)
+    return json.dumps(result, cls=DatetimeEncoder)
+
+
 @app.route('/login', methods=['POST'])
 def user_login():
     """
@@ -152,6 +235,65 @@ def user_login():
                 session.clear()
                 session['user_id'] = userInfo['id']
                 session['user_phone'] = userInfo['phone']
+        except db_conn.Error:
+            code = ResponseCode.db_conn_error
+            msg = '数据库连接错误'
+        finally:
+            # 释放游标
+            cursor.close()
+
+    result = dict(code=code, data=userInfo, msg=msg)
+    return json.dumps(result, cls=DatetimeEncoder)
+
+
+@app.route('/login_mail', methods=['POST'])
+def user_login_with_mail():
+    """
+    用户登录，post请求，请求体位于body
+    ```json
+    {
+        "mail": "string,用户邮箱",
+        "password": "string,哈希加密后的密码"
+    }
+    ```
+    :return: 登陆成功返回userInfo,其余情况为空
+    """
+    body_data = request.get_json()
+    mail = body_data.get('mail')
+    password = body_data.get('password')
+    code = ResponseCode.success
+    msg = ''
+    userInfo = None
+
+    if not mail:
+        code = ResponseCode.param_missing
+        msg = '缺少邮箱'
+    elif not verify_mail(mail):
+        code = ResponseCode.param_error
+        msg = '手机号不合法'
+    elif not password:
+        code = ResponseCode.param_missing
+        msg = '密码错误'
+    else:
+        pass
+
+    if code is ResponseCode.success:
+        db_conn = get_db()
+        cursor = db_conn.cursor(pymysql.cursors.DictCursor)
+        try:
+            cursor.execute(
+                "SELECT id, phone,mail,username,avatar,created FROM db_music_trans.t_user "
+                "WHERE mail = %s AND password = %s",
+                (mail, password))
+            userInfo = cursor.fetchone()
+            if not userInfo:
+                code = ResponseCode.db_not_found
+                msg = '账号或密码错误'
+            else:
+                session.clear()
+                session['user_id'] = userInfo['id']
+                session['user_phone'] = userInfo.get('phone')
+                session['user_mail'] = userInfo.get('mail')
         except db_conn.Error:
             code = ResponseCode.db_conn_error
             msg = '数据库连接错误'
@@ -242,7 +384,7 @@ def get_mail_verify_code():
         try:
             send_mail(mail_addr, '音乐风格迁移验证码', content)
             user_mail_code[mail_addr] = dict(code=verify_code, time=time.time())
-            data = True
+            data = dict(code=verify_code)
             msg = '验证码发送成功'
         except Exception:
             code = ResponseCode.existed_error
