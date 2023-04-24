@@ -170,7 +170,8 @@ def register_with_mail():
                     code = ResponseCode.success
                     msg = '已成功注册'
                     cursor.execute(
-                        "SELECT id, phone,mail,username,avatar,created FROM db_music_trans.t_user WHERE mail = %s", (mail))
+                        "SELECT id, phone,mail,username,avatar,created FROM db_music_trans.t_user WHERE mail = %s",
+                        (mail))
                     userInfo = cursor.fetchone()
                     session.clear()
                     session['user_id'] = userInfo['id']
@@ -319,10 +320,13 @@ def user_logout():
 @app.route('/remove_account', methods=['DELETE'])
 def remove_account():
     """
-    账户注销，级联删除数据库中用户的有关信息
+    账户注销，级联删除数据库中用户的有关信息,user_id位于URL参数中
+    ?user_id = <>
     :return: data域为空
     """
     user_id = session.get('user_id')
+    if user_id is None:
+        user_id = request.args.get('user_id')
     db_conn = get_db()
     cursor = db_conn.cursor()
     code = ResponseCode.success
@@ -464,9 +468,11 @@ def modify_user_info():
     用户修改个人信息,put请求，请求体位于body中，根据需要修改
     ```json
     {
+        "user_id": "number,用户ID"
         "username": "string, 用户名",
         "password": "string,用户登录密码",
         "avatar": "string,用户头像，已base64编码"
+        "avatar_url": "string,用户头像URL，已通过其它API上传文件后的URL"
     }
     ```
     :return: 修改成功返回新的用户个人信息，否则data域为空
@@ -476,6 +482,9 @@ def modify_user_info():
     username = body_data.get('username', 'User')
     password = body_data.get('password')
     avatar = body_data.get('avatar')
+    avatar_url = body_data.get('avatar_url')
+    if user_id is None:
+        user_id = body_data.get('user_id')
     code = ResponseCode.success
     msg = ''
     userInfo = None
@@ -492,19 +501,28 @@ def modify_user_info():
             if avatar:
                 avatar_url = upload_image(avatar)
                 cursor.execute("UPDATE db_music_trans.t_user SET avatar = %s WHERE id = %s", (avatar_url, int(user_id)))
+            if avatar_url:
+                cursor.execute("UPDATE db_music_trans.t_user SET avatar = %s WHERE id = %s", (avatar_url, int(user_id)))
             db_conn.commit()
             code = ResponseCode.success
             msg = '修改成功'
             cursor.execute(
-                "SELECT id, phone,username,avatar,created FROM db_music_trans.t_user WHERE id = %s", (int(user_id)))
+                "SELECT id, phone,mail,username,avatar,created FROM db_music_trans.t_user WHERE id = %s",
+                (int(user_id)))
             userInfo = cursor.fetchone()
             session.clear()
-            session['user_id'] = userInfo['id']
-            session['user_phone'] = userInfo['phone']
+            if userInfo is not None:
+                session['user_id'] = userInfo.get('id')
+                session['user_phone'] = userInfo.get('phone')
+            else:
+                msg = '用户不存在'
         except db_conn.Error:
             db_conn.rollback()
             code = ResponseCode.db_conn_error
             msg = '数据库连接错误'
+        except Exception:
+            code = ResponseCode.param_error
+            msg = '上传头像失败'
         finally:
             cursor.close()
     else:
@@ -1122,6 +1140,7 @@ def trans_music():
     """
     转换一首乐曲，数据位于body
     {
+        "user_id": 用户ID
         "music_id": 音乐的ID，
         "instrument_id": 要转换成的乐器的ID
     }
@@ -1144,6 +1163,9 @@ def trans_music():
         msg = '缺少必要参数，音乐ID或乐器ID'
 
     user_id = session.get('user_id')
+    if user_id is None:
+        user_id = request.get_json().get('user_id')
+        user_id = int(user_id)
 
     if code == ResponseCode.success:
         db_conn = get_db()
@@ -1381,7 +1403,7 @@ def get_my_trans_history_list():
         cursor = db_conn.cursor(pymysql.cursors.DictCursor)
 
         try:
-            cursor.execute("SELECT * FROM db_music_trans.t_transed_music tm, t_user_history uh "
+            cursor.execute("SELECT tm.* FROM db_music_trans.t_transed_music tm, t_user_history uh "
                            "WHERE tm.id = uh.transed_id AND uh.user_id = %s;",
                            (user_id))
             data = cursor.fetchall()
