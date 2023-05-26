@@ -23,6 +23,9 @@ from utils import allow_cors, ResponseCode, verify_phone, upload_image, Datetime
 app = create_app()
 app.after_request(allow_cors)
 app.after_request(response_json)
+from user import user_blue
+
+app.register_blueprint(user_blue)
 
 
 @app.route('/register', methods=['POST'])
@@ -801,11 +804,13 @@ def post_single_music():
         mi['description'] = request.form['description']
         mi['instrument'] = request.form['instrument']
         mi['instrument'] = json.loads(mi['instrument'])
-        mi['image'] = request.form['image']
+
         file = request.files.get('file')
-        if file is None:
+        img = request.files.get('image')
+        if (file is None) or (img is None):
             raise FileNotFoundError
         else:
+            mi['image'] = upload_file(img, img.filename)
             mi['file'] = upload_file(file, file.filename)
     except FileNotFoundError:
         code = ResponseCode.param_missing
@@ -820,9 +825,10 @@ def post_single_music():
         cursor = db_conn.cursor(pymysql.cursors.DictCursor)
         try:
             cursor.execute(
-                "INSERT INTO db_music_trans.t_music(`name`,`image`, artist, genre, `description`, file_url) VALUES "
-                "(%s,%s,%s,%s,%s,%s)",
-                (mi['name'], mi['image'], mi['artist'], mi['genre'], mi['description'], mi['file']))
+                "INSERT INTO db_music_trans.t_music(`name`,`cover`,`image`, artist, genre, `description`, file_url)"
+                " VALUES "
+                "(%s,%s,%s,%s,%s,%s,%s)",
+                (mi['name'], mi['image'], mi['image'], mi['artist'], mi['genre'], mi['description'], mi['file']))
             db_conn.commit()
             cursor.execute("SELECT LAST_INSERT_ID() AS id FROM db_music_trans.t_music")
             mi['id'] = cursor.fetchone()['id']
@@ -948,7 +954,7 @@ def get_all_music():
     cursor = db_conn.cursor(pymysql.cursors.DictCursor)
 
     try:
-        cursor.execute("SELECT * FROM t_music")
+        cursor.execute("SELECT * FROM t_music WHERE id > 23")
         data = cursor.fetchall()
         msg = 'success'
     except pymysql.Error:
